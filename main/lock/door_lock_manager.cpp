@@ -16,7 +16,7 @@
 #include <esp_matter.h>
 #include <platform/CHIPDeviceLayer.h>
 
-static const char *TAG = "doorlock_manager";
+static const char *TAG = "garagedoor_manager";
 
 // External reference to the endpoint IDs defined in app_main.cpp
 extern uint16_t door_lock_endpoint_id;
@@ -43,17 +43,17 @@ BoltLockManager::~BoltLockManager()
         ESP_LOGI(TAG, "Cleaned up contact sensor mutex");
     }
     
-    // Stop the door sensor task if it's running
+    // Stop the garage door sensor task if it's running
     if (mDoorSensorTaskHandle != NULL) {
         vTaskDelete(mDoorSensorTaskHandle);
         mDoorSensorTaskHandle = NULL;
-        ESP_LOGI(TAG, "Stopped door sensor task");
+        ESP_LOGI(TAG, "Stopped garage door sensor task");
     }
 }
 
 CHIP_ERROR BoltLockManager::Init(DataModel::Nullable<DlLockState> state)
 {
-    ESP_LOGI(TAG, "Initializing simplified door lock manager");
+    ESP_LOGI(TAG, "Initializing garage door controller");
     
     // Create mutex for thread-safe access to contact sensor state
     if (sContactSensorMutex == NULL) {
@@ -65,52 +65,48 @@ CHIP_ERROR BoltLockManager::Init(DataModel::Nullable<DlLockState> state)
         ESP_LOGI(TAG, "Created contact sensor mutex for thread-safe access");
     }
     
-    // Initialize GPIO pins for actuator control
-    initActuatorPins();
+    // Initialize GPIO pins for garage door relay control
+    initRelayPin();
     
     // Initialize door sensor
     initDoorSensor();
     
     // Create a task to monitor the door sensor
-    xTaskCreate(doorSensorTask, "door_sensor_task", 2048, this, 5, &mDoorSensorTaskHandle);
+    xTaskCreate(doorSensorTask, "garage_door_sensor_task", 2048, this, 5, &mDoorSensorTaskHandle);
     
     return CHIP_NO_ERROR;
 }
 
-void BoltLockManager::initActuatorPins()
+void BoltLockManager::initRelayPin()
 {
-    ESP_LOGI(TAG, "Initializing actuator pins with maximum drive capability");
+    ESP_LOGI(TAG, "Initializing garage door relay pin GP%d", GARAGE_DOOR_RELAY_PIN);
     
-    // Configure GPIO pins for actuator control
+    // Configure GPIO pin for relay control
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.mode = GPIO_MODE_OUTPUT;
-    io_conf.pin_bit_mask = (1ULL << ACTUATOR_PIN_OPEN) | (1ULL << ACTUATOR_PIN_CLOSE);
+    io_conf.pin_bit_mask = (1ULL << GARAGE_DOOR_RELAY_PIN);
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;  // Disable pull-up resistors
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
     gpio_config(&io_conf);
     
-    // Initialize both pins to low
-    gpio_set_level(ACTUATOR_PIN_OPEN, 0);
-    gpio_set_level(ACTUATOR_PIN_CLOSE, 0);
+    // Initialize relay pin to low (inactive)
+    gpio_set_level(GARAGE_DOOR_RELAY_PIN, 0);
     
-    // Set maximum GPIO drive capability for both pins
-    // GPIO_DRIVE_CAP_3 is the strongest drive capability (40mA)
-    ESP_ERROR_CHECK(gpio_set_drive_capability(ACTUATOR_PIN_OPEN, GPIO_DRIVE_CAP_3));
-    ESP_ERROR_CHECK(gpio_set_drive_capability(ACTUATOR_PIN_CLOSE, GPIO_DRIVE_CAP_3));
+    // Set GPIO drive capability
+    ESP_ERROR_CHECK(gpio_set_drive_capability(GARAGE_DOOR_RELAY_PIN, GPIO_DRIVE_CAP_2));
     
     // Verify drive capability was set correctly
-    gpio_drive_cap_t drive_cap_open, drive_cap_close;
-    ESP_ERROR_CHECK(gpio_get_drive_capability(ACTUATOR_PIN_OPEN, &drive_cap_open));
-    ESP_ERROR_CHECK(gpio_get_drive_capability(ACTUATOR_PIN_CLOSE, &drive_cap_close));
+    gpio_drive_cap_t drive_cap;
+    ESP_ERROR_CHECK(gpio_get_drive_capability(GARAGE_DOOR_RELAY_PIN, &drive_cap));
     
-    ESP_LOGI(TAG, "Actuator pins initialized: OPEN=%d (drive=%d), CLOSE=%d (drive=%d)",
-             ACTUATOR_PIN_OPEN, drive_cap_open, ACTUATOR_PIN_CLOSE, drive_cap_close);
+    ESP_LOGI(TAG, "Garage door relay pin initialized: PIN=%d (drive=%d)",
+             GARAGE_DOOR_RELAY_PIN, drive_cap);
 }
 
 void BoltLockManager::initDoorSensor()
 {
-    ESP_LOGI(TAG, "Initializing reed switch door sensor with single pin GP%d (INVERTED LOGIC)",
+    ESP_LOGI(TAG, "Initializing reed switch garage door sensor with single pin GP%d (INVERTED LOGIC)",
              REED_SWITCH_PIN);
     
     // Reset the pin to default state
@@ -141,7 +137,7 @@ void BoltLockManager::initDoorSensor()
     // Initialize door state
     mDoorIsOpen = getDoorState();
     
-    ESP_LOGI(TAG, "Door sensor initialized: PIN=%d (sense), Raw GPIO readings: %d, %d, %d, Initial state: %s",
+    ESP_LOGI(TAG, "Garage door sensor initialized: PIN=%d (sense), Raw GPIO readings: %d, %d, %d, Initial state: %s",
              REED_SWITCH_PIN, state1, state2, state3, mDoorIsOpen ? "OPEN" : "CLOSED");
 }
 
@@ -176,7 +172,7 @@ bool BoltLockManager::getDoorState()
     bool doorState = (state == 1) ? DOOR_STATE_CLOSED : DOOR_STATE_OPEN;
     
     // Log the door state with clear instructions for testing
-    ESP_LOGI(TAG, "Door state: %s (GPIO=%d) - %s",
+    ESP_LOGI(TAG, "Garage door state: %s (GPIO=%d) - %s",
             doorState ? "OPEN" : "CLOSED",
             state,
             doorState ? "Reed switch shorted to ground" : "Reed switch NOT shorted");
@@ -253,7 +249,7 @@ void BoltLockManager::updateDoorState(bool isOpen)
     mDoorIsOpen = isOpen;
     
     // Log the door state change
-    ESP_LOGI(TAG, "Door state changed: %s", isOpen ? "OPEN" : "CLOSED");
+    ESP_LOGI(TAG, "Garage door state changed: %s", isOpen ? "OPEN" : "CLOSED");
     
     // Schedule the door lock state update on the Matter thread
     struct DoorStateContext {
@@ -280,9 +276,9 @@ void BoltLockManager::updateDoorState(bool isOpen)
                 if (!state.IsNull()) {
                     currentState = state.Value();
                     if (currentState == DlLockState::kLocked) {
-                        // Door is open but lock state is locked, update to not fully locked
+                        // Garage door is open but lock state is locked, update to not fully locked
                         DoorLockServer::Instance().SetLockState(ctx->lockEndpointId, DlLockState::kNotFullyLocked);
-                        ESP_LOGI(TAG, "Updated lock state to NOT_FULLY_LOCKED because door is open");
+                        ESP_LOGI(TAG, "Updated lock state to NOT_FULLY_LOCKED because garage door is open");
                     }
                 }
             }
@@ -300,7 +296,7 @@ void BoltLockManager::doorSensorTask(void *pvParameters)
     bool lastDoorState = manager->getDoorState();
     
     // Log initial state
-    ESP_LOGI(TAG, "Door sensor task started. Initial state: %s",
+    ESP_LOGI(TAG, "Garage door sensor task started. Initial state: %s",
              lastDoorState ? "OPEN" : "CLOSED");
     
     // Force an initial update to ensure the contact sensor state is set correctly
@@ -315,7 +311,7 @@ void BoltLockManager::doorSensorTask(void *pvParameters)
         
         // If door state has changed, update it immediately
         if (currentDoorState != lastDoorState) {
-            ESP_LOGI(TAG, "Door state changed from %s to %s",
+            ESP_LOGI(TAG, "Garage door state changed from %s to %s",
                      lastDoorState ? "OPEN" : "CLOSED",
                      currentDoorState ? "OPEN" : "CLOSED");
             
@@ -326,7 +322,7 @@ void BoltLockManager::doorSensorTask(void *pvParameters)
         
         // Periodically log the current state (every ~5 seconds)
         if (++logCounter >= 50) {
-            ESP_LOGI(TAG, "Door sensor periodic status: %s",
+            ESP_LOGI(TAG, "Garage door sensor periodic status: %s",
                      currentDoorState ? "OPEN" : "CLOSED");
             logCounter = 0;
         }
@@ -336,64 +332,44 @@ void BoltLockManager::doorSensorTask(void *pvParameters)
     }
 }
 
-void BoltLockManager::controlActuator(bool isOpen)
+void BoltLockManager::toggleGarageDoor()
 {
-    const int startup_delay = 100;        // 100ms startup delay
-    const int direction_change_delay = 300; // 300ms when changing direction
-    const int operation_time = 5000;      // 5 seconds of continuous operation
+    ESP_LOGI(TAG, "Garage door: Scheduling relay toggle operation");
     
-    ESP_LOGI(TAG, "Door actuator: Starting %s operation", isOpen ? "OPEN" : "CLOSE");
-    
-    // First ensure both pins are off to avoid any conflicts
-    gpio_set_level(ACTUATOR_PIN_OPEN, 0);
-    gpio_set_level(ACTUATOR_PIN_CLOSE, 0);
-    vTaskDelay(pdMS_TO_TICKS(direction_change_delay));
-    
-    if (isOpen) {
-        // Open the door
-        ESP_LOGI(TAG, "Setting CLOSE pin to LOW");
-        gpio_set_level(ACTUATOR_PIN_CLOSE, 0);  // Ensure close pin is off
-        vTaskDelay(pdMS_TO_TICKS(startup_delay));
+    // Schedule the relay toggle on a separate task to avoid blocking the Matter thread
+    xTaskCreate([](void* param) {
+        const int relay_activation_time = 1000; // 1 second relay activation
         
-        ESP_LOGI(TAG, "Setting OPEN pin to HIGH");
-        gpio_set_level(ACTUATOR_PIN_OPEN, 1);   // Activate open pin
+        ESP_LOGI(TAG, "Garage door: Toggling relay to trigger door movement");
         
-        // Keep the actuator running for the specified time
-        vTaskDelay(pdMS_TO_TICKS(operation_time));
+        // Activate the relay (close the contact)
+        gpio_set_level(GARAGE_DOOR_RELAY_PIN, 1);
+        ESP_LOGI(TAG, "Garage door relay ACTIVATED (GPIO=%d HIGH)", GARAGE_DOOR_RELAY_PIN);
         
-        // Turn off the pin when done
-        gpio_set_level(ACTUATOR_PIN_OPEN, 0);
-        ESP_LOGI(TAG, "Door actuator: OPENED");
-    } else {
-        // Close the door
-        ESP_LOGI(TAG, "Setting OPEN pin to LOW");
-        gpio_set_level(ACTUATOR_PIN_OPEN, 0);   // Ensure open pin is off
-        vTaskDelay(pdMS_TO_TICKS(startup_delay));
+        // Keep the relay activated for 1 second
+        vTaskDelay(pdMS_TO_TICKS(relay_activation_time));
         
-        ESP_LOGI(TAG, "Setting CLOSE pin to HIGH");
-        gpio_set_level(ACTUATOR_PIN_CLOSE, 1);  // Activate close pin
+        // Deactivate the relay (open the contact)
+        gpio_set_level(GARAGE_DOOR_RELAY_PIN, 0);
+        ESP_LOGI(TAG, "Garage door relay DEACTIVATED (GPIO=%d LOW)", GARAGE_DOOR_RELAY_PIN);
         
-        // Keep the actuator running for the specified time
-        vTaskDelay(pdMS_TO_TICKS(operation_time));
+        ESP_LOGI(TAG, "Garage door: Toggle operation completed - door should be moving");
         
-        // Turn off the pin when done
-        gpio_set_level(ACTUATOR_PIN_CLOSE, 0);
-        ESP_LOGI(TAG, "Door actuator: CLOSED");
-    }
-    
-    ESP_LOGI(TAG, "Door actuator: Operation completed");
+        // Delete this task as it's a one-time operation
+        vTaskDelete(NULL);
+    }, "garage_door_toggle", 2048, NULL, 5, NULL);
 }
 
 bool BoltLockManager::Lock(EndpointId endpointId, const Optional<ByteSpan> & pin, OperationErrorEnum & err)
 {
-    ESP_LOGI(TAG, "Door Lock App: Lock command received [endpointId=%d]", endpointId);
+    ESP_LOGI(TAG, "Garage Door App: Lock command received [endpointId=%d]", endpointId);
     // These methods are called from the Matter context, so they're safe to use
     return setLockState(endpointId, DlLockState::kLocked, pin, err);
 }
 
 bool BoltLockManager::Unlock(EndpointId endpointId, const Optional<ByteSpan> & pin, OperationErrorEnum & err)
 {
-    ESP_LOGI(TAG, "Door Lock App: Unlock command received [endpointId=%d]", endpointId);
+    ESP_LOGI(TAG, "Garage Door App: Unlock command received [endpointId=%d]", endpointId);
     // These methods are called from the Matter context, so they're safe to use
     return setLockState(endpointId, DlLockState::kUnlocked, pin, err);
 }
@@ -420,17 +396,33 @@ const char * BoltLockManager::lockStateToString(DlLockState lockState) const
 bool BoltLockManager::setLockState(EndpointId endpointId, DlLockState lockState, const Optional<ByteSpan> & pin,
                                    OperationErrorEnum & err)
 {
-    ESP_LOGI(TAG, "Door Lock App: Setting door lock state to \"%s\" [endpointId=%d]", lockStateToString(lockState), endpointId);
+    ESP_LOGI(TAG, "Garage Door App: Setting door lock state to \"%s\" [endpointId=%d]", lockStateToString(lockState), endpointId);
     
-    // Update the lock state in the Matter system
-    // This is safe because this method is called from the Matter context
+    // Get current door physical state
+    bool doorIsCurrentlyOpen = mDoorIsOpen;
+    
+    // Determine if we need to toggle based on desired state vs current physical state
+    bool shouldToggle = false;
+    
+    if (lockState == DlLockState::kLocked && doorIsCurrentlyOpen) {
+        // Want to lock (close) but door is currently open
+        shouldToggle = true;
+        ESP_LOGI(TAG, "Garage Door: Need to close door (currently open, want locked)");
+    } else if (lockState == DlLockState::kUnlocked && !doorIsCurrentlyOpen) {
+        // Want to unlock (open) but door is currently closed
+        shouldToggle = true;
+        ESP_LOGI(TAG, "Garage Door: Need to open door (currently closed, want unlocked)");
+    } else {
+        ESP_LOGI(TAG, "Garage Door: Door is already in desired state, no toggle needed");
+    }
+    
+    // Update the lock state in the Matter system first
     DoorLockServer::Instance().SetLockState(endpointId, lockState);
     
-    // Control the actuator based on the lock state
-    if (lockState == DlLockState::kLocked) {
-        controlActuator(false); // Close the door
-    } else if (lockState == DlLockState::kUnlocked) {
-        controlActuator(true);  // Open the door
+    // Only toggle if needed
+    if (shouldToggle) {
+        ESP_LOGI(TAG, "Garage Door: Triggering toggle operation");
+        toggleGarageDoor();
     }
     
     return true;
@@ -451,9 +443,9 @@ CHIP_ERROR BoltLockManager::InitLockState()
         return err;
     }
 
-    // Set initial state to locked
-    OperationErrorEnum opErr;
-    setLockState(lockEndpointId, DlLockState::kLocked, Optional<ByteSpan>(), opErr);
+    // Set initial state to locked (without triggering garage door)
+    // We use DoorLockServer directly to avoid triggering the relay during initialization
+    DoorLockServer::Instance().SetLockState(lockEndpointId, DlLockState::kLocked);
     
     // Check initial door state
     bool doorIsOpen = BoltLockMgr().getDoorState();
@@ -462,11 +454,11 @@ CHIP_ERROR BoltLockManager::InitLockState()
     BoltLockMgr().updateContactSensorState(doorIsOpen);
     
     if (doorIsOpen) {
-        // If door is open but lock state is locked, update to not fully locked
+        // If garage door is open but lock state is locked, update to not fully locked
         DoorLockServer::Instance().SetLockState(lockEndpointId, DlLockState::kNotFullyLocked);
-        ESP_LOGI(TAG, "Initial door state is OPEN, setting lock state to NOT_FULLY_LOCKED");
+        ESP_LOGI(TAG, "Initial garage door state is OPEN, setting lock state to NOT_FULLY_LOCKED");
     }
     
-    ESP_LOGI(TAG, "Door lock and contact sensor initialized successfully");
+    ESP_LOGI(TAG, "Garage door controller and contact sensor initialized successfully");
     return CHIP_NO_ERROR;
 }

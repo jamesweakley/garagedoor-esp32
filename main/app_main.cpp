@@ -213,24 +213,24 @@ extern "C" void app_main()
     node_t *node = node::create(&node_config, app_attribute_update_cb, app_identification_cb);
     ABORT_APP_ON_FAILURE(node != nullptr, ESP_LOGE(TAG, "Failed to create Matter node"));
 
-    // Create a simplified door lock without advanced features
+    // Create a garage door controller using the door lock cluster
     door_lock::config_t door_lock_config;
     // endpoint handles can be used to add/modify clusters.
     endpoint_t *endpoint = door_lock::create(node, &door_lock_config, ENDPOINT_FLAG_NONE, NULL);
-    ABORT_APP_ON_FAILURE(endpoint != nullptr, ESP_LOGE(TAG, "Failed to create door lock endpoint"));
+    ABORT_APP_ON_FAILURE(endpoint != nullptr, ESP_LOGE(TAG, "Failed to create garage door endpoint"));
     
     // Get the door lock cluster but don't add advanced features
     cluster_t *door_lock_cluster = cluster::get(endpoint, DoorLock::Id);
     
-    // Set auto-relock time to 0 (disabled) since we're using a simple actuator
+    // Set auto-relock time to 0 (disabled) since we're using a simple relay toggle
     cluster::door_lock::attribute::create_auto_relock_time(door_lock_cluster, 0);
     
-    ESP_LOGI(TAG, "Created simplified door lock endpoint");
+    ESP_LOGI(TAG, "Created garage door controller endpoint");
 
     door_lock_endpoint_id = endpoint::get_id(endpoint);
-    ESP_LOGI(TAG, "Door lock created with endpoint_id %d", door_lock_endpoint_id);
+    ESP_LOGI(TAG, "Garage door controller created with endpoint_id %d", door_lock_endpoint_id);
     
-    // Create a contact sensor endpoint for the reed switch
+    // Create a contact sensor endpoint for the garage door reed switch
     contact_sensor::config_t contact_sensor_config;
     endpoint_t *contact_sensor_ep = contact_sensor::create(node, &contact_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     ABORT_APP_ON_FAILURE(contact_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create contact sensor endpoint"));

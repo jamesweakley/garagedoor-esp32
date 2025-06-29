@@ -20,16 +20,16 @@
 using namespace chip::app::Clusters;
 using chip::app::DataModel::Nullable;
 
-static const char *TAG = "doorlock_callback";
+static const char *TAG = "garagedoor_callback";
 
 void door_lock_init()
 {
-    ESP_LOGI(TAG, "Simple door lock init");
+    ESP_LOGI(TAG, "Garage door controller init");
 }
 
 void emberAfDoorLockClusterInitCallback(EndpointId endpoint)
 {
-    ESP_LOGI(TAG, "Door Lock Cluster Init Callback for endpoint %d", endpoint);
+    ESP_LOGI(TAG, "Garage Door Cluster Init Callback for endpoint %d", endpoint);
     DoorLockServer::Instance().InitServer(endpoint);
     BoltLockMgr().InitLockState();
 }
@@ -38,7 +38,7 @@ bool emberAfPluginDoorLockOnDoorLockCommand(chip::EndpointId endpointId, const N
                                             const Nullable<chip::NodeId> & nodeId, const Optional<ByteSpan> & pinCode,
                                             OperationErrorEnum & err)
 {
-    ESP_LOGI(TAG, "Door Lock App: Lock Command endpoint=%d", endpointId);
+    ESP_LOGI(TAG, "Garage Door App: Lock Command endpoint=%d", endpointId);
     bool status = BoltLockMgr().Lock(endpointId, pinCode, err);
     return status;
 }
@@ -47,7 +47,7 @@ bool emberAfPluginDoorLockOnDoorUnlockCommand(chip::EndpointId endpointId, const
                                               const Nullable<chip::NodeId> & nodeId, const Optional<ByteSpan> & pinCode,
                                               OperationErrorEnum & err)
 {
-    ESP_LOGI(TAG, "Door Lock App: Unlock Command endpoint=%d", endpointId);
+    ESP_LOGI(TAG, "Garage Door App: Unlock Command endpoint=%d", endpointId);
     bool status = BoltLockMgr().Unlock(endpointId, pinCode, err);
     return status;
 }
@@ -58,7 +58,7 @@ bool emberAfPluginDoorLockOnDoorUnlockCommand(chip::EndpointId endpointId, const
 bool emberAfPluginDoorLockGetCredential(chip::EndpointId endpointId, uint16_t credentialIndex, CredentialTypeEnum credentialType,
                                         EmberAfPluginDoorLockCredentialInfo & credential)
 {
-    ESP_LOGI(TAG, "GetCredential called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "GetCredential called but not implemented in garage door controller");
     credential.status = DlCredentialStatus::kAvailable;
     return true;
 }
@@ -67,13 +67,13 @@ bool emberAfPluginDoorLockSetCredential(chip::EndpointId endpointId, uint16_t cr
                                         chip::FabricIndex modifier, DlCredentialStatus credentialStatus,
                                         CredentialTypeEnum credentialType, const chip::ByteSpan & credentialData)
 {
-    ESP_LOGI(TAG, "SetCredential called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "SetCredential called but not implemented in garage door controller");
     return true;
 }
 
 bool emberAfPluginDoorLockGetUser(chip::EndpointId endpointId, uint16_t userIndex, EmberAfPluginDoorLockUserInfo & user)
 {
-    ESP_LOGI(TAG, "GetUser called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "GetUser called but not implemented in garage door controller");
     user.userStatus = UserStatusEnum::kAvailable;
     return true;
 }
@@ -83,28 +83,28 @@ bool emberAfPluginDoorLockSetUser(chip::EndpointId endpointId, uint16_t userInde
                                   UserStatusEnum userStatus, UserTypeEnum usertype, CredentialRuleEnum credentialRule,
                                   const CredentialStruct * credentials, size_t totalCredentials)
 {
-    ESP_LOGI(TAG, "SetUser called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "SetUser called but not implemented in garage door controller");
     return true;
 }
 
 DlStatus emberAfPluginDoorLockGetSchedule(chip::EndpointId endpointId, uint8_t weekdayIndex, uint16_t userIndex,
                                           EmberAfPluginDoorLockWeekDaySchedule & schedule)
 {
-    ESP_LOGI(TAG, "GetSchedule (weekday) called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "GetSchedule (weekday) called but not implemented in garage door controller");
     return DlStatus::kNotFound;
 }
 
 DlStatus emberAfPluginDoorLockGetSchedule(chip::EndpointId endpointId, uint8_t yearDayIndex, uint16_t userIndex,
                                           EmberAfPluginDoorLockYearDaySchedule & schedule)
 {
-    ESP_LOGI(TAG, "GetSchedule (yearday) called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "GetSchedule (yearday) called but not implemented in garage door controller");
     return DlStatus::kNotFound;
 }
 
 DlStatus emberAfPluginDoorLockGetSchedule(chip::EndpointId endpointId, uint8_t holidayIndex,
                                           EmberAfPluginDoorLockHolidaySchedule & holidaySchedule)
 {
-    ESP_LOGI(TAG, "GetSchedule (holiday) called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "GetSchedule (holiday) called but not implemented in garage door controller");
     return DlStatus::kNotFound;
 }
 
@@ -112,25 +112,25 @@ DlStatus emberAfPluginDoorLockSetSchedule(chip::EndpointId endpointId, uint8_t w
                                           DlScheduleStatus status, DaysMaskMap daysMask, uint8_t startHour, uint8_t startMinute,
                                           uint8_t endHour, uint8_t endMinute)
 {
-    ESP_LOGI(TAG, "SetSchedule (weekday) called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "SetSchedule (weekday) called but not implemented in garage door controller");
     return DlStatus::kSuccess;
 }
 
 DlStatus emberAfPluginDoorLockSetSchedule(chip::EndpointId endpointId, uint8_t yearDayIndex, uint16_t userIndex,
                                           DlScheduleStatus status, uint32_t localStartTime, uint32_t localEndTime)
 {
-    ESP_LOGI(TAG, "SetSchedule (yearday) called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "SetSchedule (yearday) called but not implemented in garage door controller");
     return DlStatus::kSuccess;
 }
 
 DlStatus emberAfPluginDoorLockSetSchedule(chip::EndpointId endpointId, uint8_t holidayIndex, DlScheduleStatus status,
                                           uint32_t localStartTime, uint32_t localEndTime, OperatingModeEnum operatingMode)
 {
-    ESP_LOGI(TAG, "SetSchedule (holiday) called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "SetSchedule (holiday) called but not implemented in garage door controller");
     return DlStatus::kSuccess;
 }
 
 void emberAfPluginDoorLockOnAutoRelock(chip::EndpointId endpointId)
 {
-    ESP_LOGI(TAG, "Auto relock called but not implemented in simplified door lock");
+    ESP_LOGI(TAG, "Auto relock called but not implemented in garage door controller");
 }

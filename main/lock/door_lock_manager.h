@@ -20,9 +20,8 @@
 #include <lib/core/CHIPError.h>
 #include "driver/gpio.h"
 
-// GPIO pins for actuator control
-#define ACTUATOR_PIN_OPEN  GPIO_NUM_6  // GPIO pin to open the door
-#define ACTUATOR_PIN_CLOSE GPIO_NUM_7  // GPIO pin to close the door (changed from GPIO_NUM_3)
+// GPIO pins for garage door control
+#define GARAGE_DOOR_RELAY_PIN  GPIO_NUM_6  // GPIO pin to toggle the garage door relay
 
 // GPIO pins for reed switch door sensor
 #define REED_SWITCH_PIN  GPIO_NUM_5  // Input pin for reed switch
@@ -75,11 +74,11 @@ public:
 private:
     friend BoltLockManager & BoltLockMgr();
     
-    // Initialize GPIO pins for actuator control
-    void initActuatorPins();
+    // Initialize GPIO pins for garage door relay control
+    void initRelayPin();
     
-    // Control actuator to open/close the door
-    void controlActuator(bool isOpen);
+    // Toggle garage door relay
+    void toggleGarageDoor();
     
     // Door sensor state
     bool mDoorIsOpen;
