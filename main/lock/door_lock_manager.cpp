@@ -173,9 +173,9 @@ void BoltLockManager::initDoorSensor()
 
 bool BoltLockManager::getDoorState()
 {
-    // INVERTED LOGIC with pull-up resistor on a single pin:
-    // When the pin is shorted to ground, the pin reads LOW (0) = DOOR OPEN
-    // When the pin is not shorted, the pin reads HIGH (1) = DOOR CLOSED
+    // CORRECTED LOGIC with pull-up resistor on a single pin:
+    // When the pin is shorted to ground, the pin reads LOW (0) = DOOR CLOSED
+    // When the pin is not shorted, the pin reads HIGH (1) = DOOR OPEN
     
     // Read the pin multiple times to debounce (without delays to prevent USB issues)
     int reading1 = gpio_get_level(REED_SWITCH_PIN);
@@ -194,16 +194,16 @@ bool BoltLockManager::getDoorState()
     ESP_LOGI(TAG, "Reed switch readings: PIN=GP%d, Raw GPIO=%d,%d,%d (final=%d)",
              REED_SWITCH_PIN, reading1, reading2, reading3, state);
     
-    // INVERTED LOGIC to match actual hardware behavior:
-    // When pin is shorted to ground, GPIO reads LOW (0), meaning door is OPEN
-    // When pin is not shorted, GPIO reads HIGH (1), meaning door is CLOSED
-    bool doorState = (state == 1) ? DOOR_STATE_CLOSED : DOOR_STATE_OPEN;
+    // CORRECTED LOGIC to match actual hardware behavior:
+    // When pin is shorted to ground, GPIO reads LOW (0), meaning door is CLOSED
+    // When pin is not shorted, GPIO reads HIGH (1), meaning door is OPEN
+    bool doorState = (state == 1) ? DOOR_STATE_OPEN : DOOR_STATE_CLOSED;
     
     // Log the door state with clear instructions for testing
     ESP_LOGI(TAG, "Garage door state: %s (GPIO=%d) - %s",
             doorState ? "OPEN" : "CLOSED",
             state,
-            doorState ? "Reed switch shorted to ground" : "Reed switch NOT shorted");
+            doorState ? "Reed switch NOT shorted" : "Reed switch shorted to ground");
     
     return doorState;
 }
@@ -295,21 +295,13 @@ void BoltLockManager::updateDoorState(bool isOpen)
         [](intptr_t context) {
             DoorStateContext* ctx = reinterpret_cast<DoorStateContext*>(context);
             
-            // If the door is open but the lock state is locked, update to not fully locked
-            if (ctx->isOpen) {
-                DlLockState currentState;
-                DataModel::Nullable<DlLockState> state;
-                DoorLock::Attributes::LockState::Get(ctx->lockEndpointId, state);
-                
-                if (!state.IsNull()) {
-                    currentState = state.Value();
-                    if (currentState == DlLockState::kLocked) {
-                        // Garage door is open but lock state is locked, update to not fully locked
-                        DoorLockServer::Instance().SetLockState(ctx->lockEndpointId, DlLockState::kNotFullyLocked);
-                        ESP_LOGI(TAG, "Updated lock state to NOT_FULLY_LOCKED because garage door is open");
-                    }
-                }
-            }
+            // Set lock state to match actual door position
+            DlLockState newLockState = ctx->isOpen ? DlLockState::kUnlocked : DlLockState::kLocked;
+            DoorLockServer::Instance().SetLockState(ctx->lockEndpointId, newLockState);
+            
+            ESP_LOGI(TAG, "Updated lock state to %s to match door position (%s)",
+                     ctx->isOpen ? "UNLOCKED" : "LOCKED",
+                     ctx->isOpen ? "OPEN" : "CLOSED");
         },
         reinterpret_cast<intptr_t>(&doorContext)
     );
@@ -443,15 +435,65 @@ bool BoltLockManager::setLockState(EndpointId endpointId, DlLockState lockState,
         ESP_LOGI(TAG, "Garage Door: Need to open door (currently closed, want unlocked)");
     } else {
         ESP_LOGI(TAG, "Garage Door: Door is already in desired state, no toggle needed");
+        // Set the lock state to match current physical state
+        DlLockState currentPhysicalState = doorIsCurrentlyOpen ? DlLockState::kUnlocked : DlLockState::kLocked;
+        DoorLockServer::Instance().SetLockState(endpointId, currentPhysicalState);
+        return true;
     }
     
-    // Update the lock state in the Matter system first
-    DoorLockServer::Instance().SetLockState(endpointId, lockState);
-    
-    // Only toggle if needed
+    // If we need to toggle, set intermediate state and schedule completion check
     if (shouldToggle) {
+        // Set intermediate state to show operation in progress
+        if (lockState == DlLockState::kLocked) {
+            ESP_LOGI(TAG, "Setting intermediate state: LOCKING");
+            // For garage doors, we don't have a "Locking" state, so we'll check after delay
+        } else {
+            ESP_LOGI(TAG, "Setting intermediate state: UNLOCKING");
+            // For garage doors, we don't have an "Unlocking" state, so we'll check after delay
+        }
+        
         ESP_LOGI(TAG, "Garage Door: Triggering toggle operation");
         toggleGarageDoor();
+        
+        // Schedule a delayed check to verify the door has moved (15 seconds for garage door)
+        struct DelayedStateCheck {
+            EndpointId endpointId;
+            DlLockState targetState;
+            BoltLockManager* manager;
+        };
+        
+        static DelayedStateCheck checkContext;
+        checkContext.endpointId = endpointId;
+        checkContext.targetState = lockState;
+        checkContext.manager = this;
+        
+        // Create a task to check the door state after 15 seconds
+        xTaskCreate([](void* param) {
+            DelayedStateCheck* ctx = static_cast<DelayedStateCheck*>(param);
+            
+            // Wait 15 seconds for garage door to complete movement
+            vTaskDelay(pdMS_TO_TICKS(15000));
+            
+            ESP_LOGI(TAG, "Checking door state after 15-second delay...");
+            
+            // Read current door state and update lock state accordingly
+            bool currentDoorState = ctx->manager->getDoorState();
+            DlLockState actualLockState = currentDoorState ? DlLockState::kUnlocked : DlLockState::kLocked;
+            
+            // Update the lock state to match actual door position
+            chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t context) {
+                DelayedStateCheck* ctx = reinterpret_cast<DelayedStateCheck*>(context);
+                bool doorState = ctx->manager->getDoorState();
+                DlLockState finalState = doorState ? DlLockState::kUnlocked : DlLockState::kLocked;
+                
+                DoorLockServer::Instance().SetLockState(ctx->endpointId, finalState);
+                ESP_LOGI(TAG, "Final lock state set to %s after garage door operation",
+                         doorState ? "UNLOCKED" : "LOCKED");
+            }, reinterpret_cast<intptr_t>(ctx));
+            
+            // Delete this task
+            vTaskDelete(NULL);
+        }, "delayed_state_check", 2048, &checkContext, 5, NULL);
     }
     
     return true;
