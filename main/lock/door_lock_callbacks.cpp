@@ -30,8 +30,24 @@ void door_lock_init()
 void emberAfDoorLockClusterInitCallback(EndpointId endpoint)
 {
     ESP_LOGI(TAG, "Garage Door Cluster Init Callback for endpoint %d", endpoint);
+    
+    // Initialize the door lock server first
     DoorLockServer::Instance().InitServer(endpoint);
-    BoltLockMgr().InitLockState();
+    
+    // Add a small delay to ensure the Matter stack is ready
+    
+    // Schedule the lock state initialization on the Matter thread to avoid blocking
+    chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t context) {
+        EndpointId ep = static_cast<EndpointId>(context);
+        ESP_LOGI(TAG, "Initializing lock state for endpoint %d", ep);
+        
+        CHIP_ERROR err = BoltLockMgr().InitLockState();
+        if (err != CHIP_NO_ERROR) {
+            ESP_LOGE(TAG, "Failed to initialize lock state: %" CHIP_ERROR_FORMAT, err.Format());
+        } else {
+            ESP_LOGI(TAG, "Lock state initialized successfully for endpoint %d", ep);
+        }
+    }, static_cast<intptr_t>(endpoint));
 }
 
 bool emberAfPluginDoorLockOnDoorLockCommand(chip::EndpointId endpointId, const Nullable<chip::FabricIndex> & fabricIdx,

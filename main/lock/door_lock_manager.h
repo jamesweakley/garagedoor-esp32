@@ -21,7 +21,7 @@
 #include "driver/gpio.h"
 
 // GPIO pins for garage door control
-#define GARAGE_DOOR_RELAY_PIN  GPIO_NUM_6  // GPIO pin to toggle the garage door relay
+#define GARAGE_DOOR_RELAY_PIN  GPIO_NUM_6  // GPIO pin to control the garage door MOSFET (SW-M221)
 
 // GPIO pins for reed switch door sensor
 #define REED_SWITCH_PIN  GPIO_NUM_5  // Input pin for reed switch
@@ -61,6 +61,9 @@ public:
     bool getDoorState();
     void updateDoorState(bool isOpen);
     static void doorSensorTask(void *pvParameters);
+    
+    // Delayed GPIO initialization task
+    static void delayedGpioInitTask(void *pvParameters);
     
     // Contact sensor methods
     void updateContactSensorState(bool isOpen);

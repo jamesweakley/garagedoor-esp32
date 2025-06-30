@@ -32,6 +32,18 @@ static const char *TAG = "app_main";
 uint16_t door_lock_endpoint_id = 0;
 uint16_t contact_sensor_endpoint_id = 0;
 
+// Watchdog timer for detecting stuck initialization
+static esp_timer_handle_t init_watchdog_timer = NULL;
+static bool matter_started = false;
+
+static void init_watchdog_callback(void* arg)
+{
+    if (!matter_started) {
+        ESP_LOGE(TAG, "Matter initialization appears stuck, restarting device...");
+        esp_restart();
+    }
+}
+
 using namespace esp_matter;
 using namespace esp_matter::attribute;
 using namespace esp_matter::endpoint;
@@ -64,6 +76,24 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
         ESP_LOGI(TAG, "Commissioning failed, fail safe timer expired");
+        // Try to reopen commissioning window after failure
+        {
+            chip::CommissioningWindowManager & commissionMgr = chip::Server::GetInstance().GetCommissioningWindowManager();
+            constexpr auto kTimeoutSeconds = chip::System::Clock::Seconds16(k_timeout_seconds);
+            if (!commissionMgr.IsCommissioningWindowOpen())
+            {
+                CHIP_ERROR err = commissionMgr.OpenBasicCommissioningWindow(kTimeoutSeconds,
+                                                chip::CommissioningWindowAdvertisement::kDnssdOnly);
+                if (err != CHIP_NO_ERROR)
+                {
+                    ESP_LOGE(TAG, "Failed to reopen commissioning window after fail safe, err:%" CHIP_ERROR_FORMAT, err.Format());
+                }
+                else
+                {
+                    ESP_LOGI(TAG, "Reopened commissioning window after fail safe timer expired");
+                }
+            }
+        }
         break;
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningSessionStarted:
@@ -123,12 +153,39 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
         
     // Matter connection events
     case chip::DeviceLayer::DeviceEventType::kCHIPoBLEConnectionEstablished:
+        ESP_LOGI(TAG, "BLE connection established");
+        break;
+        
     case chip::DeviceLayer::DeviceEventType::kCHIPoBLEConnectionClosed:
+        ESP_LOGI(TAG, "BLE connection closed");
+        break;
+        
+    // Handle BLE advertising errors
+    case chip::DeviceLayer::DeviceEventType::kCHIPoBLEAdvertisingChange:
+        ESP_LOGI(TAG, "BLE advertising state changed");
+        break;
+        
     case chip::DeviceLayer::DeviceEventType::kSecureSessionEstablished:
-        ESP_LOGI(TAG, "Matter connection event: %d", event->Type);
+        ESP_LOGI(TAG, "Secure session established");
+        break;
+        
+    // Thread/OpenThread events
+    case chip::DeviceLayer::DeviceEventType::kThreadConnectivityChange:
+        ESP_LOGI(TAG, "Thread connectivity changed");
+        break;
+        
+    case chip::DeviceLayer::DeviceEventType::kThreadStateChange:
+        ESP_LOGI(TAG, "Thread state changed");
+        break;
+        
+    // Add error handling for connectivity issues
+    case chip::DeviceLayer::DeviceEventType::kDnssdInitialized:
+        ESP_LOGI(TAG, "DNS-SD initialized");
         break;
 
     default:
+        // Log unknown events for debugging
+        ESP_LOGD(TAG, "Unhandled device event: %d", event->Type);
         break;
     }
 }
@@ -193,7 +250,46 @@ extern "C" void app_main()
     esp_err_t err = ESP_OK;
 
     /* Initialize the ESP NVS layer */
-    nvs_flash_init();
+    err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS partition was truncated and needs to be erased");
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+    ESP_LOGI(TAG, "NVS initialized successfully");
+    
+    // Clear BLE bonding data to resolve "Failed to restore IRKs from store" errors
+    // This is necessary when the BLE bonding data becomes corrupted
+    nvs_handle_t nvs_handle;
+    err = nvs_open("bt_cfg", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK) {
+        size_t required_size = 0;
+        err = nvs_get_blob(nvs_handle, "bt_cfg", NULL, &required_size);
+        if (err == ESP_OK && required_size > 0) {
+            ESP_LOGI(TAG, "Found existing BLE configuration data (%d bytes), clearing to prevent IRK errors", required_size);
+            nvs_erase_key(nvs_handle, "bt_cfg");
+            ESP_LOGI(TAG, "Cleared potentially corrupted BLE configuration");
+        }
+        nvs_close(nvs_handle);
+    }
+    
+    // Also clear other BLE-related NVS keys that might be corrupted
+    err = nvs_open("nimble_bond", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK) {
+        nvs_erase_all(nvs_handle);
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+        ESP_LOGI(TAG, "Cleared NimBLE bonding data");
+    }
+    
+    err = nvs_open("bt_config", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK) {
+        nvs_erase_all(nvs_handle);
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+        ESP_LOGI(TAG, "Cleared BT config data");
+    }
 
 #if CONFIG_PM_ENABLE
     esp_pm_config_t pm_config = {
@@ -253,12 +349,32 @@ extern "C" void app_main()
     set_openthread_platform_config(&config);
 #endif
 
+    /* Initialize door lock before starting Matter */
+    door_lock_init();
+
+    // Start a watchdog timer to detect if Matter initialization gets stuck
+    esp_timer_create_args_t timer_args = {
+        .callback = init_watchdog_callback,
+        .arg = NULL,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "init_watchdog"
+    };
+    esp_timer_create(&timer_args, &init_watchdog_timer);
+    esp_timer_start_once(init_watchdog_timer, 30000000); // 30 seconds timeout
+    ESP_LOGI(TAG, "Started initialization watchdog timer (30s timeout)");
+
     /* Matter start */
     err = esp_matter::start(app_event_cb);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
-
-    /* do nothing now */
-    door_lock_init();
+    
+    // Mark that Matter has started successfully
+    matter_started = true;
+    if (init_watchdog_timer) {
+        esp_timer_stop(init_watchdog_timer);
+        esp_timer_delete(init_watchdog_timer);
+        init_watchdog_timer = NULL;
+        ESP_LOGI(TAG, "Matter started successfully, stopped watchdog timer");
+    }
 
 #if CONFIG_ENABLE_ENCRYPTED_OTA
     err = esp_matter_ota_requestor_encrypted_init(s_decryption_key, s_decryption_key_len);

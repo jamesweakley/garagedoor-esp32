@@ -65,42 +65,74 @@ CHIP_ERROR BoltLockManager::Init(DataModel::Nullable<DlLockState> state)
         ESP_LOGI(TAG, "Created contact sensor mutex for thread-safe access");
     }
     
-    // Initialize GPIO pins for garage door relay control
-    initRelayPin();
+    // Defer GPIO initialization to prevent USB disconnection during Matter startup
+    // GPIO will be initialized later when the system is stable
+    ESP_LOGI(TAG, "GPIO initialization deferred until system is stable");
     
-    // Initialize door sensor
-    initDoorSensor();
+    // Create a delayed initialization task that will run after Matter is stable
+    BaseType_t taskResult = xTaskCreate(delayedGpioInitTask, "delayed_gpio_init", 4096, this, 5, NULL);
     
-    // Create a task to monitor the door sensor
-    xTaskCreate(doorSensorTask, "garage_door_sensor_task", 2048, this, 5, &mDoorSensorTaskHandle);
+    if (taskResult != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create delayed GPIO initialization task");
+        return CHIP_ERROR_NO_MEMORY;
+    }
+    ESP_LOGI(TAG, "Delayed GPIO initialization task created successfully");
     
     return CHIP_NO_ERROR;
 }
 
+void BoltLockManager::delayedGpioInitTask(void *pvParameters)
+{
+    BoltLockManager* manager = static_cast<BoltLockManager*>(pvParameters);
+    
+    // Wait for Matter stack to stabilize
+    vTaskDelay(pdMS_TO_TICKS(5000)); // 5 second delay
+    
+    ESP_LOGI(TAG, "Starting delayed GPIO initialization...");
+    
+    // Now initialize GPIO safely
+    manager->initRelayPin();
+    ESP_LOGI(TAG, "Relay pin initialization completed successfully");
+    
+    manager->initDoorSensor();
+    ESP_LOGI(TAG, "Door sensor initialization completed successfully");
+    
+    // Start the door sensor monitoring task
+    xTaskCreate(doorSensorTask, "garage_door_sensor_task", 2048, manager, 5, &manager->mDoorSensorTaskHandle);
+    
+    // Delete this initialization task
+    vTaskDelete(NULL);
+}
+
 void BoltLockManager::initRelayPin()
 {
-    ESP_LOGI(TAG, "Initializing garage door relay pin GP%d", GARAGE_DOOR_RELAY_PIN);
+    ESP_LOGI(TAG, "Initializing garage door MOSFET control pin GP%d for SW-M221", GARAGE_DOOR_RELAY_PIN);
     
-    // Configure GPIO pin for relay control
+    // Reset the pin to ensure clean state
+    gpio_reset_pin(GARAGE_DOOR_RELAY_PIN);
+    
+    // For SW-M221 MOSFET, we can safely use push-pull output
+    // MOSFETs are voltage-controlled with minimal current draw
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.mode = GPIO_MODE_OUTPUT;
     io_conf.pin_bit_mask = (1ULL << GARAGE_DOOR_RELAY_PIN);
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-    gpio_config(&io_conf);
     
-    // Initialize relay pin to low (inactive)
+    // Set pin LOW before configuring to ensure MOSFET starts OFF
     gpio_set_level(GARAGE_DOOR_RELAY_PIN, 0);
     
-    // Set GPIO drive capability
-    ESP_ERROR_CHECK(gpio_set_drive_capability(GARAGE_DOOR_RELAY_PIN, GPIO_DRIVE_CAP_2));
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
     
-    // Verify drive capability was set correctly
+    // Use minimal drive capability - MOSFETs need very little current
+    ESP_ERROR_CHECK(gpio_set_drive_capability(GARAGE_DOOR_RELAY_PIN, GPIO_DRIVE_CAP_0));
+    
+    // Verify configuration
     gpio_drive_cap_t drive_cap;
     ESP_ERROR_CHECK(gpio_get_drive_capability(GARAGE_DOOR_RELAY_PIN, &drive_cap));
     
-    ESP_LOGI(TAG, "Garage door relay pin initialized: PIN=%d (drive=%d)",
+    ESP_LOGI(TAG, "MOSFET control pin initialized: PIN=%d (push-pull, drive=%d, state=LOW/OFF)",
              GARAGE_DOOR_RELAY_PIN, drive_cap);
 }
 
@@ -124,14 +156,12 @@ void BoltLockManager::initDoorSensor()
     // Explicitly set the internal pull-up resistor for the input pin
     gpio_set_pull_mode(REED_SWITCH_PIN, GPIO_PULLUP_ONLY);
     
-    // Add a small delay to allow the GPIO to stabilize
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // Remove delays during initialization to prevent USB disconnection
+    // GPIO stabilization will happen naturally
     
-    // Read the initial state a few times to ensure stability
+    // Read the initial state (single read is sufficient during init)
     int state1 = gpio_get_level(REED_SWITCH_PIN);
-    vTaskDelay(pdMS_TO_TICKS(20));
     int state2 = gpio_get_level(REED_SWITCH_PIN);
-    vTaskDelay(pdMS_TO_TICKS(20));
     int state3 = gpio_get_level(REED_SWITCH_PIN);
     
     // Initialize door state
@@ -147,11 +177,9 @@ bool BoltLockManager::getDoorState()
     // When the pin is shorted to ground, the pin reads LOW (0) = DOOR OPEN
     // When the pin is not shorted, the pin reads HIGH (1) = DOOR CLOSED
     
-    // Read the pin multiple times to debounce
+    // Read the pin multiple times to debounce (without delays to prevent USB issues)
     int reading1 = gpio_get_level(REED_SWITCH_PIN);
-    vTaskDelay(pdMS_TO_TICKS(5));
     int reading2 = gpio_get_level(REED_SWITCH_PIN);
-    vTaskDelay(pdMS_TO_TICKS(5));
     int reading3 = gpio_get_level(REED_SWITCH_PIN);
     
     // Use the majority reading
@@ -334,26 +362,27 @@ void BoltLockManager::doorSensorTask(void *pvParameters)
 
 void BoltLockManager::toggleGarageDoor()
 {
-    ESP_LOGI(TAG, "Garage door: Scheduling relay toggle operation");
+    ESP_LOGI(TAG, "Garage door: Scheduling MOSFET toggle operation");
     
-    // Schedule the relay toggle on a separate task to avoid blocking the Matter thread
+    // Schedule the MOSFET toggle on a separate task to avoid blocking the Matter thread
     xTaskCreate([](void* param) {
-        const int relay_activation_time = 1000; // 1 second relay activation
+        const int mosfet_activation_time = 1000; // 1 second activation
         
-        ESP_LOGI(TAG, "Garage door: Toggling relay to trigger door movement");
+        ESP_LOGI(TAG, "Garage door: Activating MOSFET");
         
-        // Activate the relay (close the contact)
+        // Activate the MOSFET (set pin HIGH)
+        // SW-M221 is a low-side N-channel MOSFET: HIGH = ON, LOW = OFF
         gpio_set_level(GARAGE_DOOR_RELAY_PIN, 1);
-        ESP_LOGI(TAG, "Garage door relay ACTIVATED (GPIO=%d HIGH)", GARAGE_DOOR_RELAY_PIN);
+        ESP_LOGI(TAG, "Garage door MOSFET ACTIVATED (GPIO=%d HIGH)", GARAGE_DOOR_RELAY_PIN);
         
-        // Keep the relay activated for 1 second
-        vTaskDelay(pdMS_TO_TICKS(relay_activation_time));
+        // Keep the MOSFET activated for 1 second
+        vTaskDelay(pdMS_TO_TICKS(mosfet_activation_time));
         
-        // Deactivate the relay (open the contact)
+        // Deactivate the MOSFET (set pin LOW)
         gpio_set_level(GARAGE_DOOR_RELAY_PIN, 0);
-        ESP_LOGI(TAG, "Garage door relay DEACTIVATED (GPIO=%d LOW)", GARAGE_DOOR_RELAY_PIN);
+        ESP_LOGI(TAG, "Garage door MOSFET DEACTIVATED (GPIO=%d LOW)", GARAGE_DOOR_RELAY_PIN);
         
-        ESP_LOGI(TAG, "Garage door: Toggle operation completed - door should be moving");
+        ESP_LOGI(TAG, "Garage door: MOSFET toggle operation completed - door should be moving");
         
         // Delete this task as it's a one-time operation
         vTaskDelete(NULL);
@@ -430,28 +459,43 @@ bool BoltLockManager::setLockState(EndpointId endpointId, DlLockState lockState,
 
 CHIP_ERROR BoltLockManager::InitLockState()
 {
+    ESP_LOGI(TAG, "Starting lock state initialization");
+    
     // Initial lock state
     DataModel::Nullable<DlLockState> state;
     EndpointId lockEndpointId{ 1 };
-    DoorLock::Attributes::LockState::Get(lockEndpointId, state);
+    
+    // Try to get the current lock state, but don't fail if it's not available yet
+    auto stateResult = DoorLock::Attributes::LockState::Get(lockEndpointId, state);
+    if (stateResult != chip::Protocols::InteractionModel::Status::Success) {
+        ESP_LOGW(TAG, "Could not get initial lock state, using default");
+        state.SetNull(); // Use null state as default
+    }
 
     // Initialize the simplified door lock manager
     CHIP_ERROR err = BoltLockMgr().Init(state);
     if (err != CHIP_NO_ERROR)
     {
-        ESP_LOGE(TAG, "BoltLockMgr().Init() failed");
+        ESP_LOGE(TAG, "BoltLockMgr().Init() failed: %" CHIP_ERROR_FORMAT, err.Format());
         return err;
     }
+    ESP_LOGI(TAG, "BoltLockMgr initialized successfully");
+
+    // Add a small delay to ensure GPIO is stable
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // Check initial door state
+    bool doorIsOpen = BoltLockMgr().getDoorState();
+    ESP_LOGI(TAG, "Initial door state read: %s", doorIsOpen ? "OPEN" : "CLOSED");
 
     // Set initial state to locked (without triggering garage door)
     // We use DoorLockServer directly to avoid triggering the relay during initialization
     DoorLockServer::Instance().SetLockState(lockEndpointId, DlLockState::kLocked);
-    
-    // Check initial door state
-    bool doorIsOpen = BoltLockMgr().getDoorState();
+    ESP_LOGI(TAG, "Initial lock state set to LOCKED");
     
     // Update contact sensor state with initial door state
     BoltLockMgr().updateContactSensorState(doorIsOpen);
+    ESP_LOGI(TAG, "Contact sensor state updated");
     
     if (doorIsOpen) {
         // If garage door is open but lock state is locked, update to not fully locked
