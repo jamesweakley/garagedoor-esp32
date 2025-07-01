@@ -234,20 +234,20 @@ void BoltLockManager::updateContactSensorState(bool isOpen)
 
 void BoltLockManager::ScheduleContactSensorUpdate(bool isOpen)
 {
-    // Store the state in a static variable that the handler can access
-    static bool sStateToUpdate = false;
-    sStateToUpdate = isOpen;
+    // Pass the state directly as the context parameter
+    // Convert bool to intptr_t: 0 = false (closed), 1 = true (open)
+    intptr_t stateValue = isOpen ? 1 : 0;
     
     // Schedule the work on the Matter thread
-    ESP_LOGI(TAG, "Scheduling contact sensor update on Matter thread");
-    chip::DeviceLayer::PlatformMgr().ScheduleWork(ContactSensorUpdateHandler, reinterpret_cast<intptr_t>(&sStateToUpdate));
+    ESP_LOGI(TAG, "Scheduling contact sensor update on Matter thread: %s", isOpen ? "OPEN" : "CLOSED");
+    chip::DeviceLayer::PlatformMgr().ScheduleWork(ContactSensorUpdateHandler, stateValue);
 }
 
 void BoltLockManager::ContactSensorUpdateHandler(intptr_t context)
 {
     // This method runs in the Matter thread context
-    bool* isOpenPtr = reinterpret_cast<bool*>(context);
-    bool isOpen = *isOpenPtr;
+    // Convert intptr_t back to bool: 0 = false (closed), 1 = true (open)
+    bool isOpen = (context != 0);
     
     // Get the endpoint ID from the global variable
     extern uint16_t contact_sensor_endpoint_id;
@@ -306,8 +306,9 @@ void BoltLockManager::updateDoorState(bool isOpen)
         reinterpret_cast<intptr_t>(&doorContext)
     );
     
-    // Update the contact sensor state
-    updateContactSensorState(isOpen);
+    // Update the contact sensor state (inverted logic for contact sensor)
+    // Door open = contact sensor inactive (false), Door closed = contact sensor active (true)
+    updateContactSensorState(!isOpen);
 }
 
 void BoltLockManager::doorSensorTask(void *pvParameters)
